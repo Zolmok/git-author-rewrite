@@ -1,10 +1,10 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Stdio};
 
 /// Builds the value for the `GIT_SEQUENCE_EDITOR` environment variable.
 ///
-/// Wraps `exe_path` in quotes if it contains spaces, and appends the `--sequence-editor`
-/// argument.
+/// Wraps `exe_path` in quotes if it contains spaces or quotes, escaping any
+/// embedded double quotes with backslashes.
 ///
 /// # Examples
 ///
@@ -22,8 +22,11 @@ use std::process::{Command, Stdio};
 /// );
 /// ```
 pub(crate) fn build_sequence_editor_env(exe_path: &str) -> String {
-    let quoted = if exe_path.contains(' ') {
-        format!("\"{}\"", exe_path)
+    let needs_quoting = exe_path.contains(' ') || exe_path.contains('"');
+
+    let quoted = if needs_quoting {
+        let escaped = exe_path.replace('"', "\\\"");
+        format!("\"{}\"", escaped)
     } else {
         exe_path.to_string()
     };
@@ -140,7 +143,7 @@ fn run_output(mut cmd: Command) -> Result<String, String> {
 ///
 /// ```ignore
 /// // This example is ignored because it depends on being inside a Git repository.
-/// use mycrate::git::rev_parse;
+/// use git_author_rewrite::git::rev_parse;
 ///
 /// match rev_parse("--show-toplevel") {
 ///     Ok(path) => println!("Repository root: {}", path),
@@ -175,7 +178,7 @@ pub fn rev_parse(flag: &str) -> Result<String, String> {
 ///
 /// ```ignore
 /// // Ignored because it requires a Git repository with a configured user.name.
-/// use mycrate::git::config_get;
+/// use git_author_rewrite::git::config_get;
 ///
 /// match config_get("user.name") {
 ///     Ok(name) if !name.is_empty() => println!("User name: {}", name),
@@ -219,7 +222,7 @@ pub fn config_get(key: &str) -> Result<String, String> {
 ///
 /// ```ignore
 /// // Ignored because it requires a Git repository.
-/// use mycrate::git::config_set;
+/// use git_author_rewrite::git::config_set;
 ///
 /// if let Err(err) = config_set("user.name", "Jane Doe") {
 ///     eprintln!("Failed to set Git config: {}", err);
@@ -266,7 +269,7 @@ pub fn config_set(key: &str, value: &str) -> Result<(), String> {
 ///
 /// ```ignore
 /// // Ignored because it requires a Git repository.
-/// use mycrate::git::rebase_interactive;
+/// use git_author_rewrite::git::rebase_interactive;
 ///
 /// // Automatically mark all commits for editing
 /// if let Err(err) = rebase_interactive(true) {
@@ -329,8 +332,8 @@ pub fn rebase_interactive(auto_mark_all: bool) -> Result<(), String> {
 /// # Examples
 ///
 /// ```ignore
-/// // Ignored because it requires a Git repository
-/// use mycrate::git::amend_author;
+/// // Ignored because it requires a Git repository.
+/// use git_author_rewrite::git::amend_author;
 ///
 /// if let Err(err) = amend_author("John Doe <john@example.com>") {
 ///     eprintln!("Failed to amend author: {}", err);
@@ -373,8 +376,8 @@ pub fn amend_author(author: &str) -> Result<(), String> {
 /// # Examples
 ///
 /// ```ignore
-/// // Ignored because it requires a Git repository and an active rebase
-/// use mycrate::git::rebase_continue;
+/// // Ignored because it requires a Git repository and an active rebase.
+/// use git_author_rewrite::git::rebase_continue;
 ///
 /// if let Err(err) = rebase_continue() {
 ///     eprintln!("Failed to continue rebase: {}", err);
@@ -415,7 +418,7 @@ pub fn rebase_continue() -> Result<(), String> {
 ///
 /// ```ignore
 /// use std::path::Path;
-/// use mycrate::git::rebase_in_progress;
+/// use git_author_rewrite::git::rebase_in_progress;
 ///
 /// let git_dir = Path::new(".git");
 /// if rebase_in_progress(git_dir) {
@@ -423,14 +426,10 @@ pub fn rebase_continue() -> Result<(), String> {
 /// }
 /// ```
 pub fn rebase_in_progress(git_dir: &Path) -> bool {
-    let merge = PathBuf::from(git_dir).join("rebase-merge");
-    let apply = PathBuf::from(git_dir).join("rebase-apply");
+    let merge = git_dir.join("rebase-merge");
+    let apply = git_dir.join("rebase-apply");
 
-    if merge.exists() {
-        true
-    } else {
-        if apply.exists() { true } else { false }
-    }
+    merge.exists() || apply.exists()
 }
 
 #[cfg(test)]
@@ -438,7 +437,6 @@ mod tests {
     use super::build_sequence_editor_env;
     use super::rebase_in_progress;
     use std::fs;
-    use std::path::Path;
 
     #[test]
     fn sequence_editor_quotes_when_needed() {
@@ -453,29 +451,34 @@ mod tests {
     }
 
     #[test]
-    fn rebase_progress_detection_smoke() {
-        let tmp = tempfile::tempdir();
-        match tmp {
-            Ok(dir) => {
-                let git_dir = dir.path().join(".git");
-                let mk = fs::create_dir_all(&git_dir);
-                match mk {
-                    Ok(_) => {}
-                    Err(_) => {
-                        assert!(false);
-                    }
-                }
-                assert_eq!(rebase_in_progress(Path::new(&git_dir)), false);
-                let mk2 = fs::create_dir_all(git_dir.join("rebase-merge"));
-                match mk2 {
-                    Ok(_) => {}
-                    Err(_) => {
-                        assert!(false);
-                    }
-                }
-                assert_eq!(rebase_in_progress(Path::new(&git_dir)), true);
-            }
-            Err(_) => assert!(false),
-        }
+    fn sequence_editor_escapes_quotes() {
+        let s = build_sequence_editor_env("/path/with\"quote/bin");
+        assert_eq!(s, "\"/path/with\\\"quote/bin\" --sequence-editor");
+    }
+
+    #[test]
+    fn sequence_editor_handles_space_and_quote() {
+        let s = build_sequence_editor_env("/path with \"quote\"/bin");
+        assert_eq!(s, "\"/path with \\\"quote\\\"/bin\" --sequence-editor");
+    }
+
+    #[test]
+    fn rebase_progress_detection_rebase_merge() {
+        let dir = tempfile::tempdir().expect("failed to create temp dir");
+        let git_dir = dir.path().join(".git");
+        fs::create_dir_all(&git_dir).expect("failed to create .git dir");
+        assert_eq!(rebase_in_progress(&git_dir), false);
+        fs::create_dir_all(git_dir.join("rebase-merge")).expect("failed to create rebase-merge dir");
+        assert_eq!(rebase_in_progress(&git_dir), true);
+    }
+
+    #[test]
+    fn rebase_progress_detection_rebase_apply() {
+        let dir = tempfile::tempdir().expect("failed to create temp dir");
+        let git_dir = dir.path().join(".git");
+        fs::create_dir_all(&git_dir).expect("failed to create .git dir");
+        assert_eq!(rebase_in_progress(&git_dir), false);
+        fs::create_dir_all(git_dir.join("rebase-apply")).expect("failed to create rebase-apply dir");
+        assert_eq!(rebase_in_progress(&git_dir), true);
     }
 }

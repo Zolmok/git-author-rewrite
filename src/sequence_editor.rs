@@ -80,7 +80,7 @@ fn transform_line(line: &str) -> String {
 
     if trimmed.starts_with("pick ") {
         let indent_len = line.len() - trimmed.len();
-        let indent = " ".repeat(indent_len);
+        let indent = &line[..indent_len];
 
         return format!("{}edit {}", indent, &trimmed[5..]);
     }
@@ -89,50 +89,81 @@ fn transform_line(line: &str) -> String {
 }
 
 #[cfg(test)]
-mod more_tests {
-    use crate::sequence_editor::run;
+mod tests {
+    use super::{run, transform_line};
     use std::io::{Read, Write};
 
     #[test]
     fn no_picks_is_noop() {
-        let tmp = tempfile::NamedTempFile::new();
-        match tmp {
-            Ok(mut file) => {
-                // todo file with only comments and exec lines
-                let _ = writeln!(file, "# comment");
-                let _ = writeln!(file, "exec echo ok");
-                let path = file.path().to_path_buf();
+        let mut file = tempfile::NamedTempFile::new().expect("failed to create temp file");
+        writeln!(file, "# comment").expect("failed to write comment");
+        writeln!(file, "exec echo ok").expect("failed to write exec line");
+        let path = file.path().to_path_buf();
 
-                let r = run(path.to_str());
+        run(path.to_str()).expect("sequence_editor run failed");
 
-                match r {
-                    Ok(_) => {}
-                    Err(e) => {
-                        eprintln!("sequence_editor run failed: {}", e);
-                        assert!(false);
-                    }
-                }
+        let mut s = String::new();
+        let mut f = std::fs::File::open(&path).expect("failed to open file");
+        f.read_to_string(&mut s).expect("failed to read file");
 
-                let mut s = String::new();
-                let rd = std::fs::File::open(&path);
+        assert!(s.contains("exec echo ok"));
+        assert!(s.contains("# comment"));
+    }
 
-                match rd {
-                    Ok(mut f) => match f.read_to_string(&mut s) {
-                        Ok(_) => {}
-                        Err(e) => {
-                            eprintln!("read failed: {}", e);
-                            assert!(false);
-                        }
-                    },
-                    Err(_) => {
-                        assert!(false);
-                    }
-                }
+    #[test]
+    fn transform_line_converts_pick_to_edit() {
+        let result = transform_line("pick abc123 Commit message");
+        assert_eq!(result, "edit abc123 Commit message");
+    }
 
-                assert!(s.contains("exec echo ok"));
-                assert!(s.contains("# comment"));
-            }
-            Err(_) => assert!(false),
-        }
+    #[test]
+    fn transform_line_preserves_space_indent() {
+        let result = transform_line("  pick abc123 Commit message");
+        assert_eq!(result, "  edit abc123 Commit message");
+    }
+
+    #[test]
+    fn transform_line_preserves_tab_indent() {
+        let result = transform_line("\tpick abc123 Commit message");
+        assert_eq!(result, "\tedit abc123 Commit message");
+    }
+
+    #[test]
+    fn transform_line_preserves_mixed_indent() {
+        let result = transform_line("\t  pick abc123 Commit message");
+        assert_eq!(result, "\t  edit abc123 Commit message");
+    }
+
+    #[test]
+    fn transform_line_leaves_comments_unchanged() {
+        let result = transform_line("# pick abc123 Commit message");
+        assert_eq!(result, "# pick abc123 Commit message");
+    }
+
+    #[test]
+    fn transform_line_leaves_other_commands_unchanged() {
+        let result = transform_line("squash abc123 Commit message");
+        assert_eq!(result, "squash abc123 Commit message");
+    }
+
+    #[test]
+    fn run_none_returns_error() {
+        let result = run(None);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "missing todo file path");
+    }
+
+    #[test]
+    fn empty_file_produces_single_newline() {
+        let file = tempfile::NamedTempFile::new().expect("failed to create temp file");
+        let path = file.path().to_path_buf();
+
+        run(path.to_str()).expect("sequence_editor run failed");
+
+        let mut s = String::new();
+        let mut f = std::fs::File::open(&path).expect("failed to open file");
+        f.read_to_string(&mut s).expect("failed to read file");
+
+        assert_eq!(s, "\n");
     }
 }
